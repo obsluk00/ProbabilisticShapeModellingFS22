@@ -54,9 +54,7 @@ def transformFromDefField(defField : DiscreteVectorField[_3D, _3D]) =   (pt : Po
   pt+defField(reference.findClosestPoint(pt).id)
 }
 
-//Take and Visualize samples
-remove("sampleField")
-remove("sampleMesh")
-val sample = lowRankGP.sampleAtPoints(reference)
-//show(sample, "sampleField")
-show(reference.transform(transformFromDefField(sample)), "sampleMesh")
+//create model and save it
+val model : StatisticalMeshModel = StatisticalMeshModel(reference, lowRankGP)
+show(model, "model")
+StatismoIO.writeStatismoMeshModel(model, new File("datasets/project-data/LowRankGPModel.h5"))
