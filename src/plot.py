@@ -1,8 +1,8 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-referenceDF = pd.read_csv("F:/Databases/ProbabilisticShapeModellingFS22/project-data/distances.csv")
-gpDF = pd.read_csv("F:/Databases/ProbabilisticShapeModellingFS22/project-data/distancesGPModel.csv")
+referenceDF = pd.read_csv("/home/damian/Documents/Uni/Probabilistic Shape Modelling/scalismolab/datasets/project-data/distances.csv")
+gpDF = pd.read_csv("/home/damian/Documents/Uni/Probabilistic Shape Modelling/scalismolab/datasets/project-data/distancesGPModel.csv")
 
 ax = referenceDF.plot(kind='scatter', x=' length', y=' width', color='Green')
 gpDF.plot(ax=ax, kind='scatter', x=' length', y=' width', color='Orange').get_figure().savefig('measurements.png')
