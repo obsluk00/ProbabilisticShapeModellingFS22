@@ -1,0 +1,16 @@
+{
+  "name": "scala-cli",
+  "argv": [
+    "/usr/local/bin/scala-cli",
+    "bsp",
+    "--json-options",
+    "/home/damian/Documents/Uni/Probabilistic Shape Modelling/ProbabilisticShapeModellingFS22/src/.scala-build/ide-options-v2.json",
+    "/home/damian/Documents/Uni/Probabilistic Shape Modelling/ProbabilisticShapeModellingFS22/src/exercise6-3.scala"
+  ],
+  "version": "0.1.5",
+  "bspVersion": "2.0.0",
+  "languages": [
+    "scala",
+    "java"
+  ]
+}

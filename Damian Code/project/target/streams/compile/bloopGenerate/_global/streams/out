@@ -1,0 +1,4 @@
+[debug] [tutorial-14-build] Classpath dependencies List()
+[debug] [tutorial-14-build] Dependencies from configurations List()
+[debug] Bloop wrote the configuration of project 'tutorial-14-build' to '/home/damian/Documents/Uni/Probabilistic Shape Modelling/tutorial-14/project/.bloop/tutorial-14-build.json'
+[success] Generated .bloop/tutorial-14-build.json

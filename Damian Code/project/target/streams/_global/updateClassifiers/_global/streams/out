@@ -1,0 +1,4 @@
+[warn] sbt-bloop-1.5.0-sources.jar no longer exists at /C:/Users/Lukao/AppData/Local/Coursier/Cache/v1/https/repo1.maven.org/maven2/ch/epfl/scala/sbt-bloop_2.12_1.0/1.5.0/sbt-bloop-1.5.0-sources.jar
+[debug] not up to date. inChanged = false, force = false
+[debug] Updating ProjectRef(uri("file:/home/damian/Documents/Uni/Probabilistic%20Shape%20Modelling/tutorial-14/project/"), "tutorial-14-build")...
+[debug] Done updating ProjectRef(uri("file:/home/damian/Documents/Uni/Probabilistic%20Shape%20Modelling/tutorial-14/project/"), "tutorial-14-build")
