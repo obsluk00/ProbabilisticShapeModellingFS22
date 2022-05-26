@@ -1,117 +1,89 @@
 //> using scala "2.13"
-//> using lib "ch.unibas.cs.gravis::scalismo-ui:0.91-RC3"
+//> using lib "ch.unibas.cs.gravis::scalismo-ui:0.90.0"
 
-import scalismo.io.StatisticalModelIO
-import scalismo.io.MeshIO
-import scalismo.ui.api.ScalismoUI
+import scalismo.common.{PointId, UnstructuredPointsDomain}
 import scalismo.geometry._
-import scalismo.common.PointId
-import scalismo.common.interpolation.TriangleMeshInterpolator3D
-import scalismo.common.UnstructuredPointsDomain
-import scalismo.common.interpolation.NearestNeighborInterpolator3D
-import scalismo.common.UnstructuredPointsDomain1D
-import scalismo.common.UnstructuredPointsDomain3D
-import scalismo.statisticalmodel.PointDistributionModel
-import scalismo.statisticalmodel.MultivariateNormalDistribution
-
+import scalismo.io.{LandmarkIO, MeshIO, StatisticalModelIO}
 import scalismo.mesh.TriangleMesh
-import scalismo.transformations._
-
-import scalismo.sampling._
-import scalismo.sampling.proposals._
-import scalismo.sampling.parameters._
-import scalismo.sampling.evaluators._
-import scalismo.sampling.loggers.MHSampleLogger
 import scalismo.sampling.algorithms.MetropolisHastings
+import scalismo.sampling.evaluators.ProductEvaluator
+import scalismo.sampling.proposals.MixtureProposal
+import scalismo.sampling.loggers.AcceptRejectLogger
+import scalismo.sampling.{DistributionEvaluator, ProposalGenerator, TransitionProbability}
+import scalismo.statisticalmodel.{MultivariateNormalDistribution, PointDistributionModel, PointDistributionModel3D}
+import scalismo.transformations.{RigidTransformation, Rotation3D, Translation3D, TranslationAfterRotation, TranslationAfterRotation3D}
+import scalismo.utils.Memoize
+import scalismo.ui.api.ScalismoUI
+import breeze.linalg.{DenseMatrix, DenseVector}
+import scalismo.common.interpolation.TriangleMeshInterpolator3D
 
-import breeze.linalg.DenseVector
-import breeze.linalg.DenseMatrix
+import java.io.File
+
 
 object Tutorial15 extends App {
 
-  implicit val rng: scalismo.utils.Random = scalismo.utils.Random(42)
-  implicit val randBasisBreeze: breeze.stats.distributions.RandBasis = rng.breezeRandBasis
+  implicit val rng = scalismo.utils.Random(42)
   scalismo.initialize()
 
   val ui = ScalismoUI()
 
+  val boneID = 0
+
   val model =
-    StatisticalModelIO.readStatisticalTriangleMeshModel3D(new java.io.File("datasets/project-data/model4-2.h5")).get
+    StatisticalModelIO.readStatisticalTriangleMeshModel3D(new java.io.File("datasets/project-data/Model4-2.h5")).get
 
   val modelGroup = ui.createGroup("model")
   val modelView = ui.show(modelGroup, model, "model")
   modelView.referenceView.opacity = 0.5
 
+  val target = MeshIO.readMesh(new File("datasets/project-data/fragments/fragment-" + boneID.toString + ".stl")).get
   val targetGroup = ui.createGroup("target")
-
-  //TODO: load target
-  val target = MeshIO.readMesh(new java.io.File("datasets/project-data/fragments/fragment-1.stl")).get
   val targetView = ui.show(targetGroup, target, "target")
 
-  def computeCenterOfMass(mesh: TriangleMesh[_3D]): Point[_3D] = {
-    val normFactor = 1.0 / mesh.pointSet.numberOfPoints
-    mesh.pointSet.points.foldLeft(Point(0, 0, 0))((sum, point) => sum + point.toVector * normFactor)
-  }
+  case class Parameters(
+                         translationParameters: EuclideanVector[_3D],
+                         rotationParameters: (Double, Double, Double),
+                         modelCoefficients: DenseVector[Double],
+                         noiseStddev: Double
+                       )
 
-  val rotationCenter = computeCenterOfMass(model.mean)
-
-  case class Parameters(poseAndShapeParameters: PoseAndShapeParameters, noiseStddev: Double)
-  object Parameters {
-
-    implicit object parameterConversion
-      extends ParameterConversion[
-        Tuple2[PoseAndShapeParameters, Double],
-        Parameters
-      ] {
-      def from(p: Parameters): Tuple2[PoseAndShapeParameters, Double] =
-        (p.poseAndShapeParameters, p.noiseStddev)
-      def to(t: Tuple2[PoseAndShapeParameters, Double]): Parameters =
-        Parameters(t._1, t._2)
-    }
-
-    def poseTransformationForParameters(
-                                         translationParameters: TranslationParameters,
-                                         rotationParameters: RotationParameters,
-                                         centerOfRotation: Point[_3D]
-                                       ): TranslationAfterRotation[_3D] = {
-      TranslationAfterRotation3D(
-        Translation3D(translationParameters.translationVector),
-        Rotation3D(rotationParameters.angles, centerOfRotation)
+  case class Sample(generatedBy: String, parameters: Parameters, rotationCenter: Point[_3D]) {
+    def poseTransformation: TranslationAfterRotation[_3D] = {
+      val translation = Translation3D(parameters.translationParameters)
+      val rotation = Rotation3D(
+        parameters.rotationParameters._1,
+        parameters.rotationParameters._2,
+        parameters.rotationParameters._3,
+        rotationCenter
       )
+      TranslationAfterRotation3D(translation, rotation)
     }
   }
 
   case class PriorEvaluator(model: PointDistributionModel[_3D, TriangleMesh])
-    extends MHDistributionEvaluator[Parameters] {
+    extends DistributionEvaluator[Sample] {
 
     val translationPrior = breeze.stats.distributions.Gaussian(0.0, 5.0)
     val rotationPrior = breeze.stats.distributions.Gaussian(0, 0.1)
     val noisePrior = breeze.stats.distributions.LogNormal(0, 0.25)
 
-    override def logValue(sample: MHSample[Parameters]): Double = {
-      val poseAndShapeParameters = sample.parameters.poseAndShapeParameters
-      val translationParameters = poseAndShapeParameters.translationParameters
-      val rotationParameters = poseAndShapeParameters.rotationParameters
-
-      model.gp.logpdf(poseAndShapeParameters.shapeParameters.coefficients) +
-        translationPrior.logPdf(translationParameters.translationVector.x) +
-        translationPrior.logPdf(translationParameters.translationVector.y) +
-        translationPrior.logPdf(translationParameters.translationVector.z) +
-        rotationPrior.logPdf(rotationParameters.angles._1) +
-        rotationPrior.logPdf(rotationParameters.angles._2) +
-        rotationPrior.logPdf(rotationParameters.angles._3) +
+    override def logValue(sample: Sample): Double = {
+      model.gp.logpdf(sample.parameters.modelCoefficients) +
+        translationPrior.logPdf(sample.parameters.translationParameters.x) +
+        translationPrior.logPdf(sample.parameters.translationParameters.y) +
+        translationPrior.logPdf(sample.parameters.translationParameters.z) +
+        rotationPrior.logPdf(sample.parameters.rotationParameters._1) +
+        rotationPrior.logPdf(sample.parameters.rotationParameters._2) +
+        rotationPrior.logPdf(sample.parameters.rotationParameters._3) +
         noisePrior.logPdf(sample.parameters.noiseStddev)
     }
   }
 
-  // TODO: implement for bones, downsample model, downsample target?
   case class CorrespondenceEvaluator(
                                       model: PointDistributionModel[_3D, TriangleMesh],
-                                      rotationCenter: Point[_3D],
                                       target: TriangleMesh[_3D]
-                                    ) extends MHDistributionEvaluator[Parameters] {
+                                    ) extends DistributionEvaluator[Sample] {
 
-    // we extract the points and build a model from only the points
     val shapeModel: PointDistributionModel[_3D, TriangleMesh] = model
     val mesh : TriangleMesh[_3D] = shapeModel.reference
     val downsampledMesh = mesh.operations.decimate(targetedNumberOfVertices = 500)
@@ -119,31 +91,25 @@ object Tutorial15 extends App {
       newReference = downsampledMesh,
       interpolator = TriangleMeshInterpolator3D()
     )
+
     val downsampledTarget = target.operations.decimate(targetedNumberOfVertices = 500)
 
-    override def logValue(sample: MHSample[Parameters]): Double = {
-
-      val poseTransformation = Parameters.poseTransformationForParameters(
-        sample.parameters.poseAndShapeParameters.translationParameters,
-        sample.parameters.poseAndShapeParameters.rotationParameters,
-        rotationCenter
-      )
-
-      val modelCoefficients = sample.parameters.poseAndShapeParameters.shapeParameters.coefficients
-      val currentModelInstance =
-        downsampledShapeModel.instance(modelCoefficients).transform(poseTransformation)
+    override def logValue(sample: Sample): Double = {
 
       val lmUncertainty = MultivariateNormalDistribution(
         DenseVector.zeros[Double](3),
         DenseMatrix.eye[Double](3) * sample.parameters.noiseStddev
       )
 
-      val instancePoints = currentModelInstance.pointSet.points
-      val targetPoints = instancePoints.map{ point => downsampledTarget.pointSet.findClosestPoint(point).point}
+      val currModelInstance = downsampledShapeModel
+        .instance(sample.parameters.modelCoefficients)
+        .transform(sample.poseTransformation)
+
+      val closestPoints = downsampledTarget.pointSet.points.map(p => currModelInstance.operations.closestPointOnSurface(p).point)
 
       val likelihoods =
         for (
-          (pointOnInstance, targetPoint) <- currentModelInstance.pointSet.points.zip(targetPoints)
+          (targetPoint, pointOnInstance) <- downsampledTarget.pointSet.points.zip(closestPoints)
         ) yield {
 
           val observedDeformation = targetPoint - pointOnInstance
@@ -156,142 +122,227 @@ object Tutorial15 extends App {
     }
   }
 
-  val likelihoodEvaluator = CorrespondenceEvaluator(model, rotationCenter, target)
-  val priorEvaluator = PriorEvaluator(model).cached
+  case class CachedEvaluator[A](evaluator: DistributionEvaluator[A])
+    extends DistributionEvaluator[A] {
+    val memoizedLogValue = Memoize(evaluator.logValue, 10)
+
+    override def logValue(sample: A): Double = {
+      memoizedLogValue(sample)
+    }
+  }
+
+  val likelihoodEvaluator = CachedEvaluator(CorrespondenceEvaluator(model, target))
+  val priorEvaluator = CachedEvaluator(PriorEvaluator(model))
 
   val posteriorEvaluator = ProductEvaluator(priorEvaluator, likelihoodEvaluator)
 
-  val rotationProposal = MHProductProposal(
-    GaussianRandomWalkProposal(0.01, "rx").forType[Double],
-    GaussianRandomWalkProposal(0.01, "ry").forType[Double],
-    GaussianRandomWalkProposal(0.01, "rz").forType[Double]
-  ).forType[RotationParameters]
+  case class ShapeUpdateProposal(paramVectorSize: Int, stddev: Double)
+    extends ProposalGenerator[Sample]
+      with TransitionProbability[Sample] {
 
-  val translationProposal = MHProductProposal(
-    GaussianRandomWalkProposal(1.0, "tx").forType[Double],
-    GaussianRandomWalkProposal(1.0, "ty").forType[Double],
-    GaussianRandomWalkProposal(1.0, "tz").forType[Double]
-  ).forType[TranslationParameters]
-
-  val shapeProposalLeading =
-    GaussianRandomWalkProposal(0.01, "shape-0-5")
-      .partial(0 until 5)
-      .forType[ShapeParameters]
-  val shapeProposalRemaining =
-    GaussianRandomWalkProposal(0.01, "shape-6-")
-      .partial(6 until model.rank)
-      .forType[ShapeParameters]
-
-  val identTranslationProposal =
-    MHIdentityProposal.forType[TranslationParameters]
-  val identRotationProposal = MHIdentityProposal.forType[RotationParameters]
-  val identShapeProposal = MHIdentityProposal.forType[ShapeParameters]
-
-  val poseAndShapeTranslationOnlyProposal =
-    MHProductProposal(
-      translationProposal,
-      identRotationProposal,
-      identShapeProposal
+    val perturbationDistr = new MultivariateNormalDistribution(
+      DenseVector.zeros(paramVectorSize),
+      DenseMatrix.eye[Double](paramVectorSize) * stddev * stddev
     )
-      .forType[PoseAndShapeParameters]
-      .relabel("translation-only")
-  val poseAndShapeRotationOnlyProposal =
-    MHProductProposal(
-      identTranslationProposal,
-      rotationProposal,
-      identShapeProposal
-    )
-      .forType[PoseAndShapeParameters]
-      .relabel("rotation-only")
-  val poseAndShapeLeadingShapeOnlyProposal =
-    MHProductProposal(
-      identTranslationProposal,
-      identRotationProposal,
-      shapeProposalLeading
-    )
-      .forType[PoseAndShapeParameters]
-      .relabel("shape-leading-only")
 
-  val poseAndShapeRemainingShapeOnlyProposal =
-    MHProductProposal(
-      identTranslationProposal,
-      identRotationProposal,
-      shapeProposalRemaining
-    )
-      .forType[PoseAndShapeParameters]
-      .relabel("shape-trailing-only")
+    override def propose(sample: Sample): Sample = {
+      val perturbation = perturbationDistr.sample()
+      val newParameters =
+        sample.parameters.copy(modelCoefficients =
+          sample.parameters.modelCoefficients + perturbationDistr.sample
+        )
+      sample.copy(generatedBy = s"ShapeUpdateProposal ($stddev)", parameters = newParameters)
+    }
 
-  val mixturePoseAndShapeProposal = MHMixtureProposal(
-    (0.2, poseAndShapeTranslationOnlyProposal),
-    (0.2, poseAndShapeRotationOnlyProposal),
-    (0.3, poseAndShapeLeadingShapeOnlyProposal),
-    (0.3, poseAndShapeRemainingShapeOnlyProposal)
+    override def logTransitionProbability(from: Sample, to: Sample) = {
+      val residual = to.parameters.modelCoefficients - from.parameters.modelCoefficients
+      perturbationDistr.logpdf(residual)
+    }
+  }
+
+  case class RotationUpdateProposal(stddev: Double)
+    extends ProposalGenerator[Sample]
+      with TransitionProbability[Sample] {
+    val perturbationDistr =
+      new MultivariateNormalDistribution(
+        DenseVector.zeros[Double](3),
+        DenseMatrix.eye[Double](3) * stddev * stddev
+      )
+    def propose(sample: Sample): Sample = {
+      val perturbation = perturbationDistr.sample
+      val newRotationParameters = (
+        sample.parameters.rotationParameters._1 + perturbation(0),
+        sample.parameters.rotationParameters._2 + perturbation(1),
+        sample.parameters.rotationParameters._3 + perturbation(2)
+      )
+      val newParameters = sample.parameters.copy(rotationParameters = newRotationParameters)
+      sample.copy(generatedBy = s"RotationUpdateProposal ($stddev)", parameters = newParameters)
+    }
+    override def logTransitionProbability(from: Sample, to: Sample) = {
+      val residual = DenseVector(
+        to.parameters.rotationParameters._1 - from.parameters.rotationParameters._1,
+        to.parameters.rotationParameters._2 - from.parameters.rotationParameters._2,
+        to.parameters.rotationParameters._3 - from.parameters.rotationParameters._3
+      )
+      perturbationDistr.logpdf(residual)
+    }
+  }
+
+  case class TranslationUpdateProposal(stddev: Double)
+    extends ProposalGenerator[Sample]
+      with TransitionProbability[Sample] {
+
+    val perturbationDistr =
+      new MultivariateNormalDistribution(
+        DenseVector.zeros(3),
+        DenseMatrix.eye[Double](3) * stddev * stddev
+      )
+
+    def propose(sample: Sample): Sample = {
+      val newTranslationParameters =
+        sample.parameters.translationParameters + EuclideanVector.fromBreezeVector(
+          perturbationDistr.sample()
+        )
+      val newParameters = sample.parameters.copy(translationParameters = newTranslationParameters)
+      sample.copy(generatedBy = s"TranlationUpdateProposal ($stddev)", parameters = newParameters)
+    }
+
+    override def logTransitionProbability(from: Sample, to: Sample) = {
+      val residual = to.parameters.translationParameters - from.parameters.translationParameters
+      perturbationDistr.logpdf(residual.toBreezeVector)
+    }
+  }
+
+  case class NoiseStddevUpdateProposal(stddev: Double)(implicit rng: scalismo.utils.Random)
+    extends ProposalGenerator[Sample]
+      with TransitionProbability[Sample] {
+
+    val perturbationDistr = breeze.stats.distributions.Gaussian(0, stddev)(rng.breezeRandBasis)
+
+    def propose(sample: Sample): Sample = {
+      val newSigma = sample.parameters.noiseStddev + perturbationDistr.sample()
+      val newParameters = sample.parameters.copy(noiseStddev = newSigma)
+      sample.copy(generatedBy = s"NoiseStddevUpdateProposal ($stddev)", parameters = newParameters)
+    }
+
+    override def logTransitionProbability(from: Sample, to: Sample) = {
+      val residual = to.parameters.noiseStddev - from.parameters.noiseStddev
+      perturbationDistr.logPdf(residual)
+    }
+  }
+
+  val shapeUpdateProposal = ShapeUpdateProposal(model.rank, 0.1)
+  val rotationUpdateProposal = RotationUpdateProposal(0.01)
+  val translationUpdateProposal = TranslationUpdateProposal(1.0)
+  val noiseStddevUpdateProposal = NoiseStddevUpdateProposal(0.1)
+
+  val generator = MixtureProposal.fromProposalsWithTransition(
+    (0.5, shapeUpdateProposal),
+    (0.2, rotationUpdateProposal),
+    (0.2, translationUpdateProposal),
+    (0.1, noiseStddevUpdateProposal)
   )
-  val noiseProposal = GaussianRandomWalkProposal(0.1, "noise").forType[Double]
-  val identNoiseProposal = MHIdentityProposal.forType[Double]
-  val identPoseAndShapeProposal =
-    MHIdentityProposal.forType[PoseAndShapeParameters]
 
-  val noiseOnlyProposal =
-    MHProductProposal(identPoseAndShapeProposal, noiseProposal)
-      .forType[Parameters]
-  val poseAndShapeOnlyProposal =
-    MHProductProposal(mixturePoseAndShapeProposal, identNoiseProposal)
-      .forType[Parameters]
-  val fullproposal = MHMixtureProposal(
-    (0.9, poseAndShapeOnlyProposal),
-    (0.1, noiseOnlyProposal)
-  )
+  class Logger extends AcceptRejectLogger[Sample] {
+    private val numAccepted = collection.mutable.Map[String, Int]()
+    private val numRejected = collection.mutable.Map[String, Int]()
 
-  val logger = MHSampleLogger[Parameters]()
-  val chain = MetropolisHastings(fullproposal, posteriorEvaluator)
+    override def accept(
+                         current: Sample,
+                         sample: Sample,
+                         generator: ProposalGenerator[Sample],
+                         evaluator: DistributionEvaluator[Sample]
+                       ): Unit = {
+      val numAcceptedSoFar = numAccepted.getOrElseUpdate(sample.generatedBy, 0)
+      numAccepted.update(sample.generatedBy, numAcceptedSoFar + 1)
+    }
+
+    override def reject(
+                         current: Sample,
+                         sample: Sample,
+                         generator: ProposalGenerator[Sample],
+                         evaluator: DistributionEvaluator[Sample]
+                       ): Unit = {
+      val numRejectedSoFar = numRejected.getOrElseUpdate(sample.generatedBy, 0)
+      numRejected.update(sample.generatedBy, numRejectedSoFar + 1)
+    }
+
+    def acceptanceRatios(): Map[String, Double] = {
+      val generatorNames = numRejected.keys.toSet.union(numAccepted.keys.toSet)
+      val acceptanceRatios = for (generatorName <- generatorNames) yield {
+        val total = (numAccepted.getOrElse(generatorName, 0)
+          + numRejected.getOrElse(generatorName, 0)).toDouble
+        (generatorName, numAccepted.getOrElse(generatorName, 0) / total)
+      }
+      acceptanceRatios.toMap
+    }
+  }
+
+  def computeCenterOfMass(mesh: TriangleMesh[_3D]): Point[_3D] = {
+    val normFactor = 1.0 / mesh.pointSet.numberOfPoints
+    mesh.pointSet.points.foldLeft(Point(0, 0, 0))((sum, point) => sum + point.toVector * normFactor)
+  }
 
   val initialParameters = Parameters(
-    PoseAndShapeParameters(
-      TranslationParameters(EuclideanVector3D(0, 0, 0)),
-      RotationParameters((0.0, 0.0, 0.0)),
-      ShapeParameters(DenseVector.zeros[Double](model.rank))
-    ),
+    translationParameters = EuclideanVector(0, 0, 0),
+    rotationParameters = (0.0, 0.0, 0.0),
+    modelCoefficients = DenseVector.zeros[Double](model.rank),
     noiseStddev = 1.0
   )
 
-  val mhIterator = chain.iterator(MHSample(initialParameters, "inital"), logger)
+  val initialSample = Sample("initial", initialParameters, computeCenterOfMass(model.mean))
+
+  val chain = MetropolisHastings(generator, posteriorEvaluator)
+  val logger = new Logger()
+  val mhIterator = chain.iterator(initialSample, logger)
 
   val samplingIterator = for ((sample, iteration) <- mhIterator.zipWithIndex) yield {
     println("iteration " + iteration)
     if (iteration % 500 == 0) {
-      val poseAndShapeParameters = sample.parameters.poseAndShapeParameters
-      val poseTransformation = Parameters.poseTransformationForParameters(
-        poseAndShapeParameters.translationParameters,
-        poseAndShapeParameters.rotationParameters,
-        rotationCenter
-      )
       modelView.shapeModelTransformationView.shapeTransformationView.coefficients =
-        poseAndShapeParameters.shapeParameters.coefficients
+        sample.parameters.modelCoefficients
       modelView.shapeModelTransformationView.poseTransformationView.transformation =
-        poseTransformation
-
+        sample.poseTransformation
     }
     sample
   }
 
   val samples = samplingIterator.drop(1000).take(10000).toIndexedSeq
-  println(logger.samples.acceptanceRatios)
+  println(logger.acceptanceRatios())
 
   val bestSample = samples.maxBy(posteriorEvaluator.logValue)
-
-  val bestPoseAndShapeParameters = bestSample.parameters.poseAndShapeParameters
-  val bestPoseTransformation = Parameters.poseTransformationForParameters(
-    bestPoseAndShapeParameters.translationParameters,
-    bestPoseAndShapeParameters.rotationParameters,
-    rotationCenter
-  )
-
-  val bestFit = model
-    .instance(bestPoseAndShapeParameters.shapeParameters.coefficients)
-    .transform(bestPoseTransformation)
+  val bestFit =
+    model.instance(bestSample.parameters.modelCoefficients).transform(bestSample.poseTransformation)
   val resultGroup = ui.createGroup("result")
-
   ui.show(resultGroup, bestFit, "best fit")
+
+  def computeMean(
+                   model: PointDistributionModel[_3D, UnstructuredPointsDomain],
+                   id: PointId
+                 ): Point[_3D] = {
+    var mean = EuclideanVector(0, 0, 0)
+    for (sample <- samples) yield {
+      val modelInstance = model.instance(sample.parameters.modelCoefficients)
+      val pointForInstance = modelInstance.transform(sample.poseTransformation).pointSet.point(id)
+      mean += pointForInstance.toVector
+    }
+    (mean * 1.0 / samples.size).toPoint
+  }
+
+  def computeCovarianceFromSamples(
+                                    model: PointDistributionModel[_3D, UnstructuredPointsDomain],
+                                    id: PointId,
+                                    mean: Point[_3D]
+                                  ): SquareMatrix[_3D] = {
+    var cov = SquareMatrix.zeros[_3D]
+    for (sample <- samples) yield {
+      val modelInstance = model.instance(sample.parameters.modelCoefficients)
+      val pointForInstance = modelInstance.transform(sample.poseTransformation).pointSet.point(id)
+      val v = pointForInstance - mean
+      cov += v.outer(v)
+    }
+    cov * (1.0 / samples.size)
+  }
+  MeshIO.writeMesh(bestFit, new File("datasets/project-data/completed-fragments/fragment-" + boneID.toString + ".stl")).get
 
 }
