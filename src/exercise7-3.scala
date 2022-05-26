@@ -27,7 +27,7 @@ object Tutorial15 extends App {
 
   val ui = ScalismoUI()
 
-  val boneID = 0
+  val boneID = 9
 
   val model =
     StatisticalModelIO.readStatisticalTriangleMeshModel3D(new java.io.File("datasets/project-data/Model4-2.h5")).get
@@ -231,10 +231,10 @@ object Tutorial15 extends App {
     }
   }
 
-  val shapeUpdateProposal = ShapeUpdateProposal(model.rank, 0.1)
-  val rotationUpdateProposal = RotationUpdateProposal(0.01)
-  val translationUpdateProposal = TranslationUpdateProposal(1.0)
-  val noiseStddevUpdateProposal = NoiseStddevUpdateProposal(0.1)
+  val shapeUpdateProposal = ShapeUpdateProposal(model.rank, 0.03)
+  val rotationUpdateProposal = RotationUpdateProposal(0.0009)
+  val translationUpdateProposal = TranslationUpdateProposal(0.15)
+  val noiseStddevUpdateProposal = NoiseStddevUpdateProposal(0.18)
 
   val generator = MixtureProposal.fromProposalsWithTransition(
     (0.5, shapeUpdateProposal),
@@ -343,6 +343,6 @@ object Tutorial15 extends App {
     }
     cov * (1.0 / samples.size)
   }
-  MeshIO.writeMesh(bestFit, new File("datasets/project-data/completed-fragments/fragment-" + boneID.toString + ".stl")).get
+  MeshIO.writeMesh(bestFit, new File("datasets/project-data/completed-fragments/complete-" + boneID.toString + ".stl")).get
 
 }
